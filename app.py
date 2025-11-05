@@ -75,13 +75,15 @@ def lookup(comune: str, foglio: str, particella: str):
 @app.get("/search_comuni")
 def search_comuni(q: str, limit: int = 20):
     """
-    Cerca per denominazione (case-insensitive, contiene) e ritorna nome e codice catastale.
+    Suggerimenti comuni per nome: ritorna [{nome, codice}] dove 'codice' è quello catastale (es. L719).
+    Cerca case-insensitive su DENOMINAZIONE_IT dentro l'index.parquet.
     """
     try:
         sql = f"""
             SELECT DENOMINAZIONE_IT AS nome, comune AS codice
             FROM '{INDEX_URL}'
             WHERE lower(DENOMINAZIONE_IT) LIKE '%' || lower($1) || '%'
+            GROUP BY 1,2
             ORDER BY DENOMINAZIONE_IT
             LIMIT $2
         """
