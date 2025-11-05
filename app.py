@@ -136,5 +136,30 @@ def check_duplicati(codice_comune: str, limit: int = 20):
     rows = con.execute(sql, [codice_comune.upper(), limit]).fetchall()
     return [{"foglio": r[0], "particella": r[1], "count": r[2]} for r in rows]
 
+@app.get("/check_duplicati_numeric")
+def check_duplicati_numeric(codice_comune: str, limit: int = 50):
+    """
+    Trova eventuali duplicati (stesso foglio, stessa particella) ma SOLO per particelle numeriche.
+    """
+    # parquet regionale
+    q = "SELECT file FROM '{0}' WHERE comune = $1 LIMIT 1".format(INDEX_URL)
+    res = con.execute(q, [codice_comune.upper()]).fetchone()
+    if not res:
+        raise HTTPException(status_code=404, detail="Comune non trovato")
+    file_reg = BASE_URL + res[0]
+
+    sql = f"""
+        SELECT foglio, particella, COUNT(*) AS n
+        FROM '{file_reg}'
+        WHERE comune = $1
+          AND REGEXP_MATCHES(particella, '^[0-9]+$')  -- solo numeriche
+        GROUP BY foglio, particella
+        HAVING COUNT(*) > 1
+        ORDER BY foglio, particella
+        LIMIT $2
+    """
+    rows = con.execute(sql, [codice_comune.upper(), limit]).fetchall()
+    return [{"foglio": r[0], "particella": r[1], "count": r[2]} for r in rows]
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
