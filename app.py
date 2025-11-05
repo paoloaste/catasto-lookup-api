@@ -110,5 +110,31 @@ def schema_regione(codice_comune: str):
     # ritorna lista colonne
     return [{"column": r[0], "type": r[1]} for r in df]
 
+@app.get("/check_duplicati")
+def check_duplicati(codice_comune: str, limit: int = 20):
+    """
+    Cerca coppie (foglio, particella) duplicate per un comune nel parquet regionale.
+    Ritorna le prime 'limit' occorrenze con count > 1.
+    """
+    # 1) parquet regionale
+    q = "SELECT file FROM '{0}' WHERE comune = $1 LIMIT 1".format(INDEX_URL)
+    res = con.execute(q, [codice_comune.upper()]).fetchone()
+    if not res:
+        raise HTTPException(status_code=404, detail="Comune non trovato")
+    file_reg = BASE_URL + res[0]
+
+    # 2) cerca duplicati
+    sql = f"""
+        SELECT foglio, particella, COUNT(*) AS n
+        FROM '{file_reg}'
+        WHERE comune = $1
+        GROUP BY foglio, particella
+        HAVING COUNT(*) > 1
+        ORDER BY n DESC, foglio, particella
+        LIMIT $2
+    """
+    rows = con.execute(sql, [codice_comune.upper(), limit]).fetchall()
+    return [{"foglio": r[0], "particella": r[1], "count": r[2]} for r in rows]
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
