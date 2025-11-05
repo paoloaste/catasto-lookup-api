@@ -1,7 +1,9 @@
+
 import duckdb
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+from typing import List
 
 INDEX_URL = "https://raw.githubusercontent.com/ondata/dati_catastali/main/S_0000_ITALIA/anagrafica/index.parquet"
 BASE_URL  = "https://raw.githubusercontent.com/ondata/dati_catastali/main/S_0000_ITALIA/anagrafica/"
@@ -70,9 +72,41 @@ def lookup(comune: str, foglio: str, particella: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/search_comuni")
+def search_comuni(q: str, limit: int = 20):
+    """
+    Cerca per denominazione (case-insensitive, contiene) e ritorna nome e codice catastale.
+    """
+    try:
+        sql = f"""
+            SELECT DENOMINAZIONE_IT AS nome, comune AS codice
+            FROM '{INDEX_URL}'
+            WHERE lower(DENOMINAZIONE_IT) LIKE '%' || lower($1) || '%'
+            ORDER BY DENOMINAZIONE_IT
+            LIMIT $2
+        """
+        rows = con.execute(sql, [q, limit]).fetchall()
+        return [{"nome": r[0], "codice": r[1]} for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "message": "Catasto Lookup API pronta"}
+
+@app.get("/schema_regione")
+def schema_regione(codice_comune: str):
+    # trova file regione dall'indice
+    q = "SELECT file FROM '{0}' WHERE comune = $1 LIMIT 1".format(INDEX_URL)
+    res = con.execute(q, [codice_comune.upper()]).fetchone()
+    if not res:
+        raise HTTPException(status_code=404, detail="Comune non trovato")
+    file_reg = BASE_URL + res[0]
+    # schema
+    df = con.execute(f"DESCRIBE SELECT * FROM '{file_reg}' LIMIT 1").fetchall()
+    # ritorna lista colonne
+    return [{"column": r[0], "type": r[1]} for r in df]
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
