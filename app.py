@@ -2,13 +2,14 @@
 import duckdb
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import uvicorn
 from typing import List
 
 INDEX_URL = "https://raw.githubusercontent.com/ondata/dati_catastali/main/S_0000_ITALIA/anagrafica/index.parquet"
 BASE_URL  = "https://raw.githubusercontent.com/ondata/dati_catastali/main/S_0000_ITALIA/anagrafica/"
 
-app = FastAPI(title="Catasto Lookup API", version="1.0")
+app = FastAPI(title="Catasto Lookup API", version="1.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,7 +20,23 @@ app.add_middleware(
 
 # Connessione DuckDB
 con = duckdb.connect()
-con.execute("INSTALL httpfs; LOAD httpfs; SET enable_object_cache=true;")
+# httpfs e cache + threads
+con.execute(
+        """
+    INSTALL httpfs; LOAD httpfs;
+    SET enable_object_cache = true;
+    SET threads = 2;
+"""
+)
+
+# ⚡️ CARICO L'INDICE IN RAM UNA SOLA VOLTA
+con.execute(
+        f"""
+    CREATE OR REPLACE TEMP TABLE idx AS
+    SELECT comune, DENOMINAZIONE_IT, file
+    FROM '{INDEX_URL}';
+"""
+)
 
 # Cache in memoria per l'indice comune→file_regione
 index_cache = {}
@@ -33,7 +50,7 @@ def lookup(comune: str, foglio: str, particella: str):
 
         # Trova file regione
         if comune not in index_cache:
-            q1 = f"SELECT file FROM '{INDEX_URL}' WHERE comune = $1 LIMIT 1"
+            q1 = "SELECT file FROM idx WHERE comune = $1 LIMIT 1"
             res = con.execute(q1, [comune]).fetchone()
             if not res:
                 raise HTTPException(status_code=404, detail="Comune non trovato nell'indice")
@@ -79,9 +96,9 @@ def search_comuni(q: str, limit: int = 20):
     Cerca case-insensitive su DENOMINAZIONE_IT dentro l'index.parquet.
     """
     try:
-        sql = f"""
+        sql = """
             SELECT DENOMINAZIONE_IT AS nome, comune AS codice
-            FROM '{INDEX_URL}'
+            FROM idx
             WHERE lower(DENOMINAZIONE_IT) LIKE '%' || lower($1) || '%'
             GROUP BY 1,2
             ORDER BY DENOMINAZIONE_IT
@@ -97,10 +114,23 @@ def search_comuni(q: str, limit: int = 20):
 def root():
     return {"status": "ok", "message": "Catasto Lookup API pronta"}
 
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
+# Ensure JSON error responses; CORS middleware will append headers even on errors
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc: HTTPException):
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc: Exception):
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+
 @app.get("/schema_regione")
 def schema_regione(codice_comune: str):
     # trova file regione dall'indice
-    q = "SELECT file FROM '{0}' WHERE comune = $1 LIMIT 1".format(INDEX_URL)
+    q = "SELECT file FROM idx WHERE comune = $1 LIMIT 1"
     res = con.execute(q, [codice_comune.upper()]).fetchone()
     if not res:
         raise HTTPException(status_code=404, detail="Comune non trovato")
@@ -117,7 +147,7 @@ def check_duplicati(codice_comune: str, limit: int = 20):
     Ritorna le prime 'limit' occorrenze con count > 1.
     """
     # 1) parquet regionale
-    q = "SELECT file FROM '{0}' WHERE comune = $1 LIMIT 1".format(INDEX_URL)
+    q = "SELECT file FROM idx WHERE comune = $1 LIMIT 1"
     res = con.execute(q, [codice_comune.upper()]).fetchone()
     if not res:
         raise HTTPException(status_code=404, detail="Comune non trovato")
@@ -142,7 +172,7 @@ def check_duplicati_numeric(codice_comune: str, limit: int = 50):
     Trova eventuali duplicati (stesso foglio, stessa particella) ma SOLO per particelle numeriche.
     """
     # parquet regionale
-    q = "SELECT file FROM '{0}' WHERE comune = $1 LIMIT 1".format(INDEX_URL)
+    q = "SELECT file FROM idx WHERE comune = $1 LIMIT 1"
     res = con.execute(q, [codice_comune.upper()]).fetchone()
     if not res:
         raise HTTPException(status_code=404, detail="Comune non trovato")
